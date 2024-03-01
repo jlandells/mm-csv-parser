@@ -3,9 +3,12 @@
 package main
 
 import (
+	"encoding/csv"
 	"flag"
+	"io"
 	"log"
 	"os"
+	"strings"
 )
 
 var debugMode bool = false
@@ -13,6 +16,13 @@ var fullnameMode bool = false
 
 // LogLevel is used to refer to the type of message that will be written using the logging code.
 type LogLevel string
+
+type mmConnection struct {
+	mmURL    string
+	mmPort   string
+	mmScheme string
+	mmToken  string
+}
 
 const (
 	debugLevel   LogLevel = "DEBUG"
@@ -54,6 +64,63 @@ func getEnvWithDefault(key string, defaultValue interface{}) interface{} {
 		return defaultValue
 	}
 	return value
+}
+
+// findStringInSlice searches for a string in a slice and returns its index.
+// If the string is not found, it returns -1.
+func findStringInSlice(slice []string, value string) int {
+	for i, item := range slice {
+		if item == value {
+			return i
+		}
+	}
+	return -1 // Not found
+}
+
+func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIle string, userIDColumn string, fullnameFlag bool) bool {
+	DebugPrint("Starting to process CSV file")
+
+	LogMessage(infoLevel, "Processing data from file: "+csvInputFile)
+
+	file, err := os.Open(csvInputFile)
+	if err != nil {
+		log.Fatal("Error reading inpur file", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+
+	// We need to read the header row before starting to process the rest of the file, in order to
+	// identify which entry contains the user ID
+	header, err := reader.Read()
+	if err != nil {
+		LogMessage(errorLevel, "Unable to read header record from CSV file: "+err.Error())
+		return false
+	}
+	index := findStringInSlice(header, userIDColumn)
+	if index < 0 {
+		LogMessage(errorLevel, "Unable to find column '"+userIDColumn+"' in CSV header")
+		return false
+	}
+
+	// At this point, we've read the first line of the CSV file (the header) and we know at which
+	// position the user ID column is located.  We can now process the rest of the file.
+
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			LogMessage(errorLevel, "Unable to process CSV record: "+err.Error())
+			return false
+		}
+		DebugPrint("Current record: [ " + strings.Join(record, ", ") + " ]")
+		currentUserID := record[index]
+		DebugPrint("User ID: " + currentUserID)
+	}
+
+	return true
 }
 
 // Main section
@@ -137,5 +204,12 @@ func main() {
 
 	debugMode = DebugFlag
 	fullnameMode = FullnameFlag
+
+	mattermostConenction := mmConnection{
+		mmURL:    MattermostURL,
+		mmPort:   MattermostPort,
+		mmScheme: MattermostScheme,
+		mmToken:  MattermostToken,
+	}
 
 }
