@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -97,11 +98,13 @@ func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIl
 		LogMessage(errorLevel, "Unable to read header record from CSV file: "+err.Error())
 		return false
 	}
+	DebugPrint("CSV Header: " + strings.Join(header, ", "))
 	index := findStringInSlice(header, userIDColumn)
 	if index < 0 {
 		LogMessage(errorLevel, "Unable to find column '"+userIDColumn+"' in CSV header")
 		return false
 	}
+	DebugPrint("Selected column is at index: " + strconv.Itoa(index) + " (zero-based)")
 
 	// At this point, we've read the first line of the CSV file (the header) and we know at which
 	// position the user ID column is located.  We can now process the rest of the file.
@@ -211,5 +214,7 @@ func main() {
 		mmScheme: MattermostScheme,
 		mmToken:  MattermostToken,
 	}
+
+	processCSVFile(mattermostConenction, InputCSVFilename, OutputCSVFilename, UserIDColumnName, fullnameMode)
 
 }
