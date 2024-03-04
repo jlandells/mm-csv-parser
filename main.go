@@ -4,12 +4,17 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/buger/jsonparser"
 )
 
 var debugMode bool = false
@@ -78,10 +83,91 @@ func findStringInSlice(slice []string, value string) int {
 	return -1 // Not found
 }
 
+func getUserFromMattermost(mattermostCon mmConnection, userID string, fullnameFlag bool) (string, bool) {
+	DebugPrint("Retrieving user data from Mattermost for user ID: " + userID)
+
+	userData := ""
+
+	url := fmt.Sprintf("%s://%s:%s/api/v4/users/%s", mattermostCon.mmScheme, mattermostCon.mmURL, mattermostCon.mmPort, userID)
+	DebugPrint("URL to call: " + url)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		LogMessage(errorLevel, "Error preparing GET")
+		log.Fatal(err)
+	}
+	// Add the bearer token as a header
+	req.Header.Add("Authorization", "Bearer "+mattermostCon.mmToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		LogMessage(errorLevel, "Failed to query Mattermost")
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	// Extract the body of the message
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		LogMessage(errorLevel, "Unable to extract body data from Mqattermost response")
+		log.Fatal(err)
+	}
+
+	// Parse the response
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		LogMessage(errorLevel, "Failed to convert body data")
+		log.Fatal(err)
+	}
+
+	// Convert the data to a string to return to the calling function
+	mmUserData, err := json.Marshal(result)
+	if err != nil {
+		LogMessage(errorLevel, "Unable to convert user data to string")
+		log.Fatal(err)
+	}
+
+	username, err := jsonparser.GetString([]byte(mmUserData), "username")
+	if err != nil {
+		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+		return "", false
+	}
+	userEmail, err := jsonparser.GetString([]byte(mmUserData), "email")
+	if err != nil {
+		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+		return "", false
+	}
+	userFirstName, err := jsonparser.GetString([]byte(mmUserData), "first_name")
+	if err != nil {
+		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+		return "", false
+	}
+	userLastName, err := jsonparser.GetString([]byte(mmUserData), "last_name")
+	if err != nil {
+		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+		return "", false
+	}
+	userFullName := fmt.Sprintf("%s %s", userFirstName, userLastName)
+	DebugPrint("Username: " + username + " Email: " + userEmail + " Full Name: " + userFullName)
+
+	if fullnameFlag {
+		if userFullName == " " {
+			userData = username
+		} else {
+			userData = userFullName
+		}
+	} else {
+		userData = username
+	}
+
+	return userData, true
+}
+
 func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIle string, userIDColumn string, fullnameFlag bool) bool {
 	DebugPrint("Starting to process CSV file")
 
 	LogMessage(infoLevel, "Processing data from file: "+csvInputFile)
+	LogMessage(infoLevel, "Writing output to file:    "+csvOuputFIle)
 
 	file, err := os.Open(csvInputFile)
 	if err != nil {
@@ -106,8 +192,24 @@ func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIl
 	}
 	DebugPrint("Selected column is at index: " + strconv.Itoa(index) + " (zero-based)")
 
+	outfile, err := os.Create(csvOuputFIle)
+	if err != nil {
+		LogMessage(warningLevel, "Unable to create output file - writing to stdout")
+		outfile = os.Stdout
+	}
+
+	// Initialise CSV writer
+	writer := csv.NewWriter(outfile)
+
+	defer writer.Flush()
+
+	// Write out the header row
+	writer.Write(header)
+
 	// At this point, we've read the first line of the CSV file (the header) and we know at which
 	// position the user ID column is located.  We can now process the rest of the file.
+
+	recordsProcessed := 0
 
 	for {
 		record, err := reader.Read()
@@ -121,7 +223,26 @@ func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIl
 		DebugPrint("Current record: [ " + strings.Join(record, ", ") + " ]")
 		currentUserID := record[index]
 		DebugPrint("User ID: " + currentUserID)
+		userData, success := getUserFromMattermost(mattermostCon, currentUserID, fullnameFlag)
+		if !success {
+			LogMessage(warningLevel, "Error looking up User ID - skipping record!")
+			continue
+		}
+		DebugPrint("User data from Mattermost: " + userData)
+
+		// Now that we have the updated record, we can simply replace the relevant entry in the array
+		record[index] = userData
+		writer.Write(record)
+		recordsProcessed += 1
 	}
+
+	if err := writer.Error(); err != nil {
+		LogMessage(errorLevel, "Error writing CSV file!")
+		log.Fatal(err)
+	}
+
+	processedRecordsMessage := fmt.Sprintf("Records processed: %d", recordsProcessed)
+	LogMessage(infoLevel, processedRecordsMessage)
 
 	return true
 }
@@ -148,9 +269,9 @@ func main() {
 	flag.StringVar(&MattermostScheme, "scheme", "", "The HTTP scheme to be used (http/https). [Default: "+defaultScheme+"]")
 	flag.StringVar(&MattermostToken, "token", "", "The auth token used to connect to Mattermost")
 	flag.StringVar(&InputCSVFilename, "infile", "", "*Required* The name of the CSV file to be processed")
-	flag.StringVar(&OutputCSVFilename, "outfile", "", "The name of the output file that the CSV should be written to.  Note that if this parameter is omitted, the output will be written to stdout.")
+	flag.StringVar(&OutputCSVFilename, "outfile", "", "*Required* The name of the output file that the CSV should be written to.")
 	flag.StringVar(&UserIDColumnName, "column", "", "*Required* The name of the column within the CSV file that contains the user ID")
-	flag.BoolVar(&FullnameFlag, "fullname", false, "Return the full name of the Mattermost user, instead of the username")
+	flag.BoolVar(&FullnameFlag, "fullname", false, "Return the full name of the Mattermost user, instead of the username (if a full name is available)")
 	flag.BoolVar(&DebugFlag, "debug", false, "Enable debug output")
 
 	flag.Parse()
@@ -196,6 +317,10 @@ func main() {
 		LogMessage(errorLevel, "The CSV input file must be supplied as a command line parameter")
 		cliErrors = true
 	}
+	if OutputCSVFilename == "" {
+		LogMessage(errorLevel, "The CSV output file must be supplied as a command line parameter")
+		cliErrors = true
+	}
 	if UserIDColumnName == "" {
 		LogMessage(errorLevel, "The user ID column name from the CSV must be supplied as a command line parameter")
 		cliErrors = true
@@ -216,5 +341,7 @@ func main() {
 	}
 
 	processCSVFile(mattermostConenction, InputCSVFilename, OutputCSVFilename, UserIDColumnName, fullnameMode)
+
+	LogMessage(infoLevel, "CSV processing complete!")
 
 }
