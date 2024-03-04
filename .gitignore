@@ -21,3 +21,4 @@
 go.work
 *.csv
 .vscode/launch.json
+mm-csv-parse*
