@@ -30,6 +30,13 @@ type mmConnection struct {
 	mmToken  string
 }
 
+type User struct {
+	UserID   string
+	Username string
+	Email    string
+	FullName string
+}
+
 const (
 	debugLevel   LogLevel = "DEBUG"
 	infoLevel    LogLevel = "INFO"
@@ -83,81 +90,93 @@ func findStringInSlice(slice []string, value string) int {
 	return -1 // Not found
 }
 
-func getUserFromMattermost(mattermostCon mmConnection, userID string, fullnameFlag bool) (string, bool) {
-	DebugPrint("Retrieving user data from Mattermost for user ID: " + userID)
+func getUserFromMattermost(users map[string]User, mattermostCon mmConnection, userID string, fullnameFlag bool) (string, bool) {
 
 	userData := ""
 
-	url := fmt.Sprintf("%s://%s:%s/api/v4/users/%s", mattermostCon.mmScheme, mattermostCon.mmURL, mattermostCon.mmPort, userID)
-	DebugPrint("URL to call: " + url)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		LogMessage(errorLevel, "Error preparing GET")
-		log.Fatal(err)
-	}
-	// Add the bearer token as a header
-	req.Header.Add("Authorization", "Bearer "+mattermostCon.mmToken)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		LogMessage(errorLevel, "Failed to query Mattermost")
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-
-	// Extract the body of the message
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		LogMessage(errorLevel, "Unable to extract body data from Mqattermost response")
-		log.Fatal(err)
-	}
-
-	// Parse the response
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		LogMessage(errorLevel, "Failed to convert body data")
-		log.Fatal(err)
-	}
-
-	// Convert the data to a string to return to the calling function
-	mmUserData, err := json.Marshal(result)
-	if err != nil {
-		LogMessage(errorLevel, "Unable to convert user data to string")
-		log.Fatal(err)
-	}
-
-	username, err := jsonparser.GetString([]byte(mmUserData), "username")
-	if err != nil {
-		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
-		return "", false
-	}
-	userEmail, err := jsonparser.GetString([]byte(mmUserData), "email")
-	if err != nil {
-		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
-		return "", false
-	}
-	userFirstName, err := jsonparser.GetString([]byte(mmUserData), "first_name")
-	if err != nil {
-		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
-		return "", false
-	}
-	userLastName, err := jsonparser.GetString([]byte(mmUserData), "last_name")
-	if err != nil {
-		LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
-		return "", false
-	}
-	userFullName := fmt.Sprintf("%s %s", userFirstName, userLastName)
-	DebugPrint("Username: " + username + " Email: " + userEmail + " Full Name: " + userFullName)
-
-	if fullnameFlag {
-		if userFullName == " " {
-			userData = username
+	if _, exists := users[userID]; exists {
+		DebugPrint("User ID " + userID + " already cached")
+		if fullnameFlag {
+			userData = users[userID].FullName
 		} else {
-			userData = userFullName
+			userData = users[userID].Username
 		}
 	} else {
-		userData = username
+		DebugPrint("User ID " + userID + " not present in cache.  Retrieving from Mattermost.")
+
+		url := fmt.Sprintf("%s://%s:%s/api/v4/users/%s", mattermostCon.mmScheme, mattermostCon.mmURL, mattermostCon.mmPort, userID)
+		DebugPrint("URL to call: " + url)
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			LogMessage(errorLevel, "Error preparing GET")
+			log.Fatal(err)
+		}
+		// Add the bearer token as a header
+		req.Header.Add("Authorization", "Bearer "+mattermostCon.mmToken)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			LogMessage(errorLevel, "Failed to query Mattermost")
+			log.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		// Extract the body of the message
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			LogMessage(errorLevel, "Unable to extract body data from Mqattermost response")
+			log.Fatal(err)
+		}
+
+		// Parse the response
+		var result map[string]interface{}
+		if err := json.Unmarshal(body, &result); err != nil {
+			LogMessage(errorLevel, "Failed to convert body data")
+			log.Fatal(err)
+		}
+
+		// Convert the data to a string to return to the calling function
+		mmUserData, err := json.Marshal(result)
+		if err != nil {
+			LogMessage(errorLevel, "Unable to convert user data to string")
+			log.Fatal(err)
+		}
+
+		username, err := jsonparser.GetString([]byte(mmUserData), "username")
+		if err != nil {
+			LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+			return "", false
+		}
+		userEmail, err := jsonparser.GetString([]byte(mmUserData), "email")
+		if err != nil {
+			LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+			return "", false
+		}
+		userFirstName, err := jsonparser.GetString([]byte(mmUserData), "first_name")
+		if err != nil {
+			LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+			return "", false
+		}
+		userLastName, err := jsonparser.GetString([]byte(mmUserData), "last_name")
+		if err != nil {
+			LogMessage(warningLevel, "Error processing JSON response data for user ID: "+userID)
+			return "", false
+		}
+		userFullName := fmt.Sprintf("%s %s", userFirstName, userLastName)
+		DebugPrint("Username: " + username + " Email: " + userEmail + " Full Name: " + userFullName)
+
+		if userFullName == " " {
+			userFullName = username
+		}
+
+		users[userID] = User{UserID: userID, Username: username, Email: userEmail, FullName: userFullName}
+
+		if fullnameFlag {
+			userData = userFullName
+		} else {
+			userData = username
+		}
 	}
 
 	return userData, true
@@ -211,6 +230,9 @@ func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIl
 
 	recordsProcessed := 0
 
+	// The users map is used for us to cache user details, to save us having to make an API call every time
+	users := make(map[string]User)
+
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -223,7 +245,7 @@ func processCSVFile(mattermostCon mmConnection, csvInputFile string, csvOuputFIl
 		DebugPrint("Current record: [ " + strings.Join(record, ", ") + " ]")
 		currentUserID := record[index]
 		DebugPrint("User ID: " + currentUserID)
-		userData, success := getUserFromMattermost(mattermostCon, currentUserID, fullnameFlag)
+		userData, success := getUserFromMattermost(users, mattermostCon, currentUserID, fullnameFlag)
 		if !success {
 			LogMessage(warningLevel, "Error looking up User ID - skipping record!")
 			continue
